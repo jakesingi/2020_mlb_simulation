@@ -1,0 +1,490 @@
+---
+title: "R Exercise: Simulating the 2020 MLB Regular Season and Postseason"
+author: "Jake Singleton"
+date: "10/07/2020"
+output: pdf_document
+---
+
+## Introduction
+
+In this notebook, I simulate the 2020 MLB regular season and postseason using the [Bradley-Terry model](https://en.wikipedia.org/wiki/Bradley%E2%80%93Terry_model) discussed in Chapter 9 of *Analyzing Baseball Data with R* by Max Marchi, Jim Albert, and Benjamin Baumer. I use [Pythagorean Win Percentage](https://en.wikipedia.org/wiki/Pythagorean_expectation) as an estimate of teams' true talent levels, which, while certainly overly-simplimistic, builds on the foundation presented in the book's chapter and serves as a good starting point for a projection system.
+
+## The Math
+
+The math is very quick, and consequently the majority of this report will consist of code. But here's how the model works: suppose Team A is playing Team B in a single game. Then, by the Bradley-Terry model, the probability that Team A wins is:
+
+$P(\text{A wins}) = \frac{exp(T_A)}{exp(T_A) + exp(T_B)}$, where $T_A$ and $T_B$ are the true talent estimates for Team A and Team B respectively. Naturally, we have to decide how to assign a talent to each of the 30 MLB teams, and this is where I've decided to use each team's 2020 Pythagorean Win%. I made this choice because it is a better predictor of a team's W-L record than Win% itself and is easy to find/work with. Once we have each team's talent, it is straightforward to calculate a given team's probability of winning a game.
+
+More complex and better models might use an [ELO](https://en.wikipedia.org/wiki/Elo_rating_system), [Mixed Models](https://arxiv.org/pdf/1806.08059.pdf), or [SRS](https://blog.collegefootballdata.com/talking-tech-bu/) approach, but that's a project for another time.
+
+## The Code
+
+Given we know how to find the relevant probabilities, the main tasks in the code involve the following:
+
+1. Making the [60 game schedule](https://en.wikipedia.org/wiki/2020_Major_League_Baseball_season#Schedule)
+2. Organizing the teams' talents
+3. Playing out a full regular season using the appropriate probabilities, representing each game as the flip of a loaded coin to determine the winner
+4. Using the results of the regular season to determine playoff teams, and then simulating the [2020 postseason](https://en.wikipedia.org/wiki/2020_Major_League_Baseball_season#Postseason)
+5. Repeating the above steps many times in order to be able to compare our model's results to what has actually happened, and to project what will happen in the remainder of the postseason
+
+Most of the code below walks through the above steps in order to simulate a single season. Once we can do this, we write a function that simulates one whole season for us, and then we call this function 1,000 times to simulate 1,000 seasons. We then analyze our results graphically!
+
+
+```{r, message = FALSE}
+library(tidyverse)
+library(baseballr)
+```
+
+
+```{r}
+# Step 1: Make the schedule
+# Function that takes in team names and the number of times they will play each other at their home parks. Outputs data frame where each row is a game
+make_schedule = function(teams, k) {
+  n_teams = length(teams)
+  Home = rep(rep(teams, each = n_teams), k)
+  Visitor = rep(rep(teams, n_teams), k)
+  schedule = tibble(Home = Home, Visitor = Visitor) %>%
+    filter(Home != Visitor)
+  return(schedule)
+}
+
+NLWest = c("LAD", "SFG", "COL", "ARZ", "SDP")
+NLCentral = c("CHC", "STL", "MIL", "CIN", "PIT")
+NLEast = c("ATL", "MIA", "NYM", "PHI", "WSH")
+ALWest = c("OAK", "HOU", "TEX", "SEA", "LAA")
+ALCentral = c("MIN", "CWS", "CLE", "KCR", "DET")
+ALEast = c("NYY", "BOS", "TOR", "TBR", "BAL")
+
+teams = c(NLWest, NLCentral, NLEast, ALWest, ALCentral, ALEast)
+league = c(rep(1, 15), rep(2, 15))
+div = c(rep(3, 5), rep(4, 5), rep(5, 5), rep(6, 5), rep(7, 5), rep(8,5))
+# Each team plays its divisional foes 10 times, half at home and half away
+schedule = bind_rows(make_schedule(NLWest, 5),
+                     make_schedule(NLCentral, 5),
+                     make_schedule(NLEast, 5),
+                     make_schedule(ALWest, 5),
+                     make_schedule(ALCentral, 5),
+                     make_schedule(ALEast, 5))
+# Add in interleague matchups
+# Note that Home and Visitor don't matter since this model doesn't take in home-field advantage
+schedule = bind_rows(schedule,
+                     make_schedule(c("ARZ", "TEX"), 2),  # D-Backs
+                     make_schedule(c("ARZ", "HOU"), 3),
+                     make_schedule(c("ARZ", "OAK"), 2),
+                     c(Home = "ARZ", Visitor = "SEA"),
+                     c(Home = "ARZ", Visitor = "SEA"),
+                     c(Home = "ARZ", Visitor = "SEA"),
+                     c(Home = "LAA", Visitor = "ARZ"),
+                     c(Home = "LAA", Visitor = "ARZ"),
+                     c(Home = "LAA", Visitor = "ARZ"),
+                     make_schedule(c("NYY", "ATL"), 2),  # Braves
+                     make_schedule(c("ATL", "BOS"), 3),
+                     c(Home = "BAL", Visitor = "ATL"),
+                     c(Home = "BAL", Visitor = "ATL"),
+                     c(Home = "BAL", Visitor = "ATL"),
+                     c(Home = "ATL", Visitor = "TOR"),
+                     c(Home = "ATL", Visitor = "TOR"),
+                     c(Home = "ATL", Visitor = "TOR"),
+                     make_schedule(c("ATL", "TBR"), 2),
+                     make_schedule(c("BAL", "NYM"), 2),  # Orioles
+                     make_schedule(c("BAL", "MIA"), 2),
+                     c(Home = "PHI", Visitor = "BAL"),
+                     c(Home = "PHI", Visitor = "BAL"),
+                     c(Home = "PHI", Visitor = "BAL"),
+                     make_schedule(c("BAL", "WSH"), 3),
+                     make_schedule(c("BOS", "NYM"), 2),  # Red Sox
+                     c(Home = "MIA", Visitor = "BOS"),
+                     c(Home = "MIA", Visitor = "BOS"),
+                     c(Home = "MIA", Visitor = "BOS"),
+                     c(Home = "BOS", Visitor = "WSH"),
+                     c(Home = "BOS", Visitor = "WSH"),
+                     c(Home = "BOS", Visitor = "WSH"),
+                     make_schedule(c("BOS", "PHI"), 2),
+                     make_schedule(c("CHC", "KCR"), 2),  # Cubs
+                     c(Home = "CHC", Visitor = "MIN"),
+                     c(Home = "CHC", Visitor = "MIN"),
+                     c(Home = "CHC", Visitor = "MIN"),
+                     make_schedule(c("CHC", "CLE"), 2),
+                     c(Home = "DET", Visitor = "CHC"),
+                     c(Home = "DET", Visitor = "CHC"),
+                     c(Home = "DET", Visitor = "CHC"),
+                     make_schedule(c("CHC", "CWS"), 3),
+                     make_schedule(c("CWS", "PIT"), 2),  # White Sox
+                     c(Home = "CWS", Visitor = "STL"),
+                     c(Home = "CWS", Visitor = "STL"),
+                     c(Home = "CWS", Visitor = "STL"),
+                     make_schedule(c("CWS", "MIL"), 2),
+                     c(Home = "CIN", Visitor = "CWS"),
+                     c(Home = "CIN", Visitor = "CWS"),
+                     c(Home = "CIN", Visitor = "CWS"),
+                     c(Home = "MIN", Visitor = "CIN"),  # Reds
+                     c(Home = "MIN", Visitor = "CIN"),
+                     c(Home = "MIN", Visitor = "CIN"),
+                     make_schedule(c("CIN", "CLE"), 2),
+                     make_schedule(c("CIN", "KCR"), 2),
+                     make_schedule(c("CIN", "DET"), 3),
+                     c(Home = "CLE", Visitor = "MIL"),  # Indians
+                     c(Home = "CLE", Visitor = "MIL"),
+                     c(Home = "CLE", Visitor = "MIL"),
+                     make_schedule(c("CLE", "PIT"), 3),
+                     c(Home = "STL", Visitor = "CLE"),
+                     c(Home = "STL", Visitor = "CLE"),
+                     c(Home = "STL", Visitor = "CLE"),
+                     make_schedule(c("COL", "OAK"), 2),  # Rockies
+                     make_schedule(c("COL", "HOU"), 2),
+                     make_schedule(c("COL", "TEX"), 3),
+                     c(Home = "COL", Visitor = "LAA"),
+                     c(Home = "COL", Visitor = "LAA"),
+                     c(Home = "COL", Visitor = "LAA"),
+                     c(Home = "SEA", Visitor = "COL"),
+                     c(Home = "SEA", Visitor = "COL"),
+                     c(Home = "SEA", Visitor = "COL"),
+                     #c(Home = "STL", Visitor = "DET"),  # Tigers... games against STL not played due to COVID
+                     #c(Home = "STL", Visitor = "DET"),
+                     make_schedule(c("DET", "MIL"), 2),
+                     c(Home = "PIT", Visitor = "DET"),
+                     c(Home = "PIT", Visitor = "DET"),
+                     c(Home = "PIT", Visitor = "DET"),
+                     make_schedule(c("LAD", "HOU"), 2), # Astros
+                     c(Home = "SDP", Visitor = "HOU"),
+                     c(Home = "SDP", Visitor = "HOU"),
+                     c(Home = "SDP", Visitor = "HOU"),
+                     c(Home = "HOU", Visitor = "SFG"),
+                     c(Home = "HOU", Visitor = "SFG"),
+                     c(Home = "HOU", Visitor = "SFG"),
+                     make_schedule(c("KCR", "STL"), 3),  # Royals
+                     c(Home = "MIL", Visitor = "KCR"),
+                     c(Home = "MIL", Visitor = "KCR"),
+                     c(Home = "MIL", Visitor = "KCR"),
+                     c(Home = "KCR", Visitor = "PIT"),
+                     c(Home = "KCR", Visitor = "PIT"),
+                     c(Home = "KCR", Visitor = "PIT"),
+                     make_schedule(c("LAD", "LAA"), 3),  # Angels
+                     make_schedule(c("SDP", "LAA"), 2),
+                     make_schedule(c("LAA", "SFG"), 2),
+                     c(Home = "TEX", Visitor = "LAD"),  # Dodgers
+                     c(Home = "TEX", Visitor = "LAD"),
+                     c(Home = "TEX", Visitor = "LAD"),
+                     c(Home = "LAD", Visitor = "OAK"),
+                     c(Home = "LAD", Visitor = "OAK"),
+                     c(Home = "LAD", Visitor = "OAK"),
+                     make_schedule(c("LAD", "SEA"), 2),
+                     c(Home = "NYY", Visitor = "MIA"),  # Marlins
+                     c(Home = "NYY", Visitor = "MIA"),
+                     c(Home = "NYY", Visitor = "MIA"),
+                     make_schedule(c("MIA", "TBR"), 3),
+                     make_schedule(c("MIA", "TOR"), 2),
+                     make_schedule(c("MIL", "MIN"), 3),  # Brewers
+                     make_schedule(c("MIN", "STL"), 2),  # Twins
+                     make_schedule(c("MIN", "PIT"), 2),
+                     make_schedule(c("NYY", "NYM"), 3),  # Mets
+                     c(Home = "NYM", Visitor = "TBR"),
+                     c(Home = "NYM", Visitor = "TBR"),
+                     c(Home = "NYM", Visitor = "TBR"),
+                     c(Home = "TOR", Visitor = "NYM"),
+                     c(Home = "TOR", Visitor = "NYM"),
+                     c(Home = "TOR", Visitor = "NYM"),
+                     make_schedule(c("PHI", "NYY"), 2),  # Yankees
+                     c(Home = "WSH", Visitor = "NYY"),
+                     c(Home = "WSH", Visitor = "NYY"),
+                     c(Home = "WSH", Visitor = "NYY"),
+                     c(Home = "OAK", Visitor = "SDP"),  # A's
+                     c(Home = "OAK", Visitor = "SDP"),
+                     c(Home = "OAK", Visitor = "SDP"),
+                     make_schedule(c("OAK", "SFG"), 3),
+                     c(Home = "TBR", Visitor = "PHI"),  # Phillies
+                     c(Home = "TBR", Visitor = "PHI"),
+                     c(Home = "TBR", Visitor = "PHI"),
+                     make_schedule(c("PHI", "TOR"), 3),  # Pirates nothing to be done
+                     make_schedule(c("SEA", "SDP"), 3),  # Padres
+                     make_schedule(c("SDP", "TEX"), 2),
+                     make_schedule(c("SFG", "SEA"), 2),  # Giants
+                     c(Home = "SFG", Visitor = "TEX"),  
+                     c(Home = "SFG", Visitor = "TEX"),
+                     c(Home = "SFG", Visitor = "TEX"),  # Mariners and Cardinals nothing to be done
+                     make_schedule(c("WSH", "TBR"), 2),  # Rays; Rangers nothing to be done
+                     make_schedule(c("WSH", "TOR"), 2)  # Blue Jays; Nationals nothing to be done
+                     )
+
+# Step 2: Get Team Talents and Win Probabilities
+# Use Pythagorean Win%... scrape the standings:
+standings_NL = standings_on_date_bref(date = "2020-09-28", division = "NL Overall")
+standings_AL = standings_on_date_bref(date = "2020-09-28", division = "AL Overall")
+print(standings_NL)
+print(standings_AL)
+
+# NL
+NLWest_talents = c(0.712, 0.503, 0.388, 0.458, 0.633)
+NLCentral_talents = c(0.545, 0.521, 0.470, 0.5, 0.363)
+NLEast_talents = c(0.586, 0.434, 0.466, 0.493, 0.488)
+NL_talents = c(NLWest_talents, NLCentral_talents, NLEast_talents)
+
+# AL
+ALWest_talents = c(0.576, 0.507, 0.353, 0.420, 0.460)
+ALCentral_talents = c(0.601, 0.599, 0.578, 0.458, 0.390)
+ALEast_talents = c(0.570, 0.417, 0.485, 0.605, 0.468)
+AL_talents = c(ALWest_talents, ALCentral_talents, ALEast_talents)
+
+# Aggregate all talents
+all_talents = c(NL_talents, AL_talents)
+names(all_talents) = teams
+
+# Standardize the talents
+standardized_talents = (all_talents - mean(all_talents)) / sd(all_talents)
+
+# Put into data frame
+TAL = tibble(Team = teams, League = league, Division = div, Talent = standardized_talents)
+SCH = schedule %>%
+  inner_join(TAL, by = c("Home" = "Team")) %>%
+  rename(Talent.Home = Talent) %>%
+  inner_join(TAL, by = c("Visitor" = "Team")) %>%
+  rename(Talent.Visitor = Talent)
+
+# Win probabilities according to Bradley-Terry Model
+SCH = SCH %>%
+  mutate(prob_Home = exp(Talent.Home) / (exp(Talent.Home) + exp(Talent.Visitor)))
+head(SCH)
+```
+
+
+A portion of the 2020 regular season schedule with probabilities is above.
+
+
+```{r}
+#  Step 3: Play out a full season, where each game is a bernoulli trial with the parameter of the probability the home team wins
+set.seed(9)
+SCH %>%
+    mutate(outcome = rbinom(nrow(.), 1, prob_Home),
+           winner = ifelse(outcome, Home, Visitor)) -> SCH
+
+# Reults of the season
+SCH %>% 
+  group_by(winner) %>%
+  summarize(Wins = n()) %>%
+  inner_join(TAL, by = c("winner" = "Team")) -> RESULTS
+
+# Step 4: Simulate the playoffs
+# Assign Division Winners and Division Runner-UPs
+out = RESULTS %>%
+      mutate(Winner.Div = 0,
+             RunnerUp.Div = 0,
+             prob = exp(Talent),
+             outcome = sample(nrow(.), prob = prob)) %>%
+      arrange(Division, desc(Wins), outcome) %>%
+      select(-outcome)
+out[1 + c(0, 5, 10, 15, 20, 25), "Winner.Div"] = 1
+out[1 + c(1, 6, 11, 16, 21, 26), "RunnerUp.Div"] = 1
+
+# Assign wild card teams
+WC_teams = out %>%
+  filter(Winner.Div == 0 & RunnerUp.Div == 0) %>%
+  group_by(League) %>%
+  arrange(desc(Wins)) %>%
+  slice(1:2) %>%
+  pull(winner)
+out = out %>%
+  mutate(WC = ifelse(winner %in% WC_teams, 1, 0))
+
+# Now that we have the playoff teams, need to simulate the playoffs themselves
+# Wild Card Round (best of 3). First get WC matchups
+playoff_teams = out %>% 
+  filter(Winner.Div == 1 | RunnerUp.Div == 1 | WC == 1) %>% 
+  arrange(League, desc(Winner.Div), desc(RunnerUp.Div), desc(WC), desc(Wins)) %>% 
+  pull(winner)
+NL_playoff_teams = playoff_teams[1:8]
+AL_playoff_teams = playoff_teams[9:16]
+NL_1_vs_8 = rbind(NL_playoff_teams[1], NL_playoff_teams[8])
+NL_2_vs_7 = rbind(NL_playoff_teams[2], NL_playoff_teams[7])
+NL_3_vs_6 = rbind(NL_playoff_teams[3], NL_playoff_teams[6])
+NL_4_vs_5 = rbind(NL_playoff_teams[4], NL_playoff_teams[5])
+
+AL_1_vs_8 = rbind(AL_playoff_teams[1], AL_playoff_teams[8])
+AL_2_vs_7 = rbind(AL_playoff_teams[2], AL_playoff_teams[7])
+AL_3_vs_6 = rbind(AL_playoff_teams[3], AL_playoff_teams[6])
+AL_4_vs_5 = rbind(AL_playoff_teams[4], AL_playoff_teams[5])
+
+# Stack into df
+wc_matchups = as_tibble(rbind(NL_1_vs_8, NL_2_vs_7, NL_3_vs_6, NL_4_vs_5,
+                              AL_1_vs_8, AL_2_vs_7, AL_3_vs_6, AL_4_vs_5)) %>%
+  rename(Team = V1) %>%
+  mutate(Seed = rep(c(1, 8, 2, 7, 3, 6, 4, 5), 2))
+
+# Merge with out
+wc_matchups = wc_matchups %>% 
+  inner_join(out, by = c("Team" = "winner"))
+
+# Simulate wild card round
+wc_results = wc_matchups %>%
+  mutate(Group = rep(1:(n()/2), each = 2)) %>%
+  group_by(Group) %>%
+  mutate(outcome = rmultinom(1, 3, prob), Winner.WC = ifelse(outcome > 1, 1, 0)) %>%
+  ungroup() %>%
+  select(-Group)
+
+# Simulate division series
+# Arrange rows such that we get the correct division series matchups
+div_matchups = (wc_results %>%
+  filter(outcome > 1))[c(1, 4, 2, 3, 5, 8, 6, 7), ]
+
+# Simulate DS series
+div_series_results = div_matchups %>%
+  mutate(Group = rep(1:(n()/2), each = 2)) %>%
+  group_by(Group) %>%
+  mutate(outcome = rmultinom(1, 5, prob), Winner.DS = ifelse(outcome > 2, 1, 0)) %>%
+  ungroup() %>%
+  select(-Group) 
+
+# Simulate championship series
+# Get appropriate matchups as above
+champ_matchups = div_series_results %>%
+                    filter(outcome > 2)
+
+championship_series_results = champ_matchups %>%
+  mutate(Group = rep(1:(n()/2), each = 2)) %>%
+  group_by(Group) %>%
+  mutate(outcome = rmultinom(1, 7, prob), Winner.CS = ifelse(outcome > 3, 1, 0)) %>%
+  ungroup() %>%
+  select(-Group)
+
+# Simulate world series
+# Get appropriate matchups as above
+ws_matchup = championship_series_results %>%
+  filter(outcome > 3)
+
+ws_results <- ws_matchup %>%
+    mutate(outcome = rmultinom(1, 7, prob),
+           Winner.WS = ifelse(outcome > 3, 1, 0))
+
+champion = ws_results %>%
+  filter(Winner.WS == 1)
+
+# For reference
+head(ws_results)
+```
+
+
+As we see in the sample data frame above, the Dodgers swept the World Series from Minnesota.
+
+
+```{r, message = FALSE}
+# Step 5: Simulate 2020 season 1,000 times
+source("one_simulation_20.R")
+n_seasons = 1000
+Many.Results = suppressMessages(map_df(rep("arg", n_seasons), one_simulation_20))
+head(Many.Results)
+```
+
+The data frame `Many.Results` contains 30,000 rows = 30 teams * 1,000 seasons and includes the results for each team for each season.
+
+## Analysis
+
+
+```{r, message = FALSE}
+# Proportion of times making the playoffs for each team
+playoff_props = Many.Results %>%
+  filter(Winner.Div.x == 1 | RunnerUp.Div.x == 1 | WC.x == 1) %>%
+  group_by(winner) %>%
+  summarize(Percent = n() / n_seasons * 100)
+
+ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
+  geom_bar(stat = "identity") +
+  xlab("Team") +
+  ggtitle("Percentage of Time Team Makes Playoffs") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+ggsave("playoff_odds.png")
+```
+
+
+This bar chart shows that our model predicted Atlanta, Cleveland, CWS, LAD, Minnesota, NYY, Oakland, San Diego, and Tampa Bay (9 teams) to make the playoffs 100% of the time (an overestimation, which will be discussed in the conclusion). Next come CHC and Houston at just under 100%, Saint Louis and Cincinnati around 90% (the first substantial dropoff) and then Philadelphia, Washington, and San Francisco rounding out the top 16 teams. It is nice to see Philadelphia and San Francisco in their respective positions, as they came just one win away from making the postseason. As for Washington, well, they underperformed their Pythagorean win expectation by 3 games, tied for most in the league, so it makes sense their playoff odds are overestimated here. In addition, we see that our model predicted Toronto as the 17th most likely to make the playoffs at a bit under 50% odds, which is reassuring since they were one of the AL Wild Card teams. As for Milwaukee, who outperformed Pythagorean win-loss by one game and had the 2nd best record in one-run games at 11-5, seeing them at 19th here isn't too far off. The big miss is Miami, who our model predicted basically had no chance of making the postseason. In fact, Miami oveperformed their Pythagorean win expectation by a Major League-leading 5 games, in part due to having the 6th best record in one-run games in baseball at 11-8. Overall, we see that when using Pythagorean win percentage as teams' talent levels, we predicted 13/16 teams correctly for an accuracy rate of 81%. 
+
+[Link to relevant stats here.](https://www.baseball-reference.com/leagues/MLB/2020-standings.shtml)
+
+
+```{r, message = FALSE}
+# Percent Chance of Making Division Series
+playoff_props = Many.Results %>%
+  filter(Winner.WC.x == 1) %>%
+  group_by(winner) %>%
+  summarize(Percent = n() / n_seasons * 100)
+
+ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
+  geom_bar(stat = "identity") +
+  xlab("Team") +
+  ggtitle("Percentage of Time Team Makes Division Series") +
+  theme_bw()
+ggsave("divseries_odds.png")
+```
+
+
+Of the 8 teams to make the Division Series this year (Tampa Bay, NYY, Houston, Oakland, LAD, San Diego, Miami, and Atlanta), our model had 5 of them in its top 8 most likely (LAD, San Diego, Atlanta, Tampa Bay, and Oakland) for a 62.5% accuracy rate. The Yankees slotted in at 9th most likely, Houston at 11th, and Miami (as expected based on the plot above) at virtually 0%. Importantly, here we can see a definite weakness of using Pythagorean Win% to estimate a team's talent level. Given the best-of-3 structure of the Wild Card round this year, there was higher-than-usual variance (i.e. a lot of variance) in who would make the Division Series. No team deserves a close-to-100% chance of making the DS, and our model putting the Dodgers in this range missed this. In the concluding section of this report, I'll talk a little bit more about why this is and how the model could be improved.
+
+
+```{r, message = FALSE}
+# Percent Chance of Making Championship Series
+playoff_props = Many.Results %>%
+  filter(Winner.DS.x == 1) %>%
+  group_by(winner) %>%
+  summarize(Percent = n() / n_seasons * 100)
+
+ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
+  geom_bar(stat = "identity") +
+  xlab("Team") +
+  ggtitle("Percentage of Time Team Makes Championship Series") +
+  theme_bw()
+ggsave("championshipseries_odds.png")
+```
+
+
+As of today (October 7), the four Championship Series teams have yet to be decided. However, with Houston owning a 2-0 lead over Oakland, Atlanta also owning a 2-0 lead on Miami, and LAD being up 1-0 on San Diego in a series in which they're already heavy favorites, these three are looking fairly likely. The model likes Atlanta and LAD which provides some nice confirmation, and Tampa, the 3rd most likely, is currently locked at 1-1 with NYY. Minnesota, coming off its shocking [18th straight playoff loss](https://www.espn.com/mlb/story/_/id/27762397/minnesota-twins-torture-breaking-their-record-mlb-playoffs-losing-streak) after being upset 2-0 by the Astros in the Wild Card round, was our model's next most popular choice. Note that San Diego, one of our model's favorite teams until this point, checks in at 10th most likely, much lower than earlier because of the playoff format: the winner of the 1 vs. 8 WC series plays the winner of the 4 vs. 5 WC series. The Dodgers were the 1 seed and Wild Card round victors 955 times, and the Padres the 4 seed and WC round victors 879 times, forcing them to face off quite often in the Division Series, in which LAD was a strong favorite and frequently the winning side.
+
+
+```{r, message = FALSE}
+# Percent Chance of Making World Series
+playoff_props = Many.Results %>%
+  filter(Winner.CS.x == 1) %>%
+  group_by(winner) %>%
+  summarize(Percent = n() / n_seasons * 100)
+
+ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
+  geom_bar(stat = "identity") +
+  xlab("Team") +
+  ggtitle("Percentage of Time Team Makes World Series") +
+  theme_bw()
+ggsave("worldseries_odds.png")
+```
+
+
+Our model loves the Dodgers in case you haven't noticed yet. They make the World Series around 85% of the time, and no other team comes close. It likes Tampa Bay, the other 1 seed, next best at 30% odds, and of the other remaining playoff teams, San Diego and Oakland are at a bit more than 10% odds, while New York, Atlanta, Houston, and Miami (not even pictured) are at 6% or lower. Note that Atlanta drops a lot here relative to the previous bar chart for the same reason the Padres did earlier: having to face the Dodgers.
+
+
+```{r, message = FALSE}
+# Percent Chance of Winning World Series
+playoff_props = Many.Results %>%
+  filter(Winner.WS == 1) %>%
+  group_by(winner) %>%
+  summarize(Percent = n() / n_seasons * 100)
+
+ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
+  geom_bar(stat = "identity") +
+  xlab("Team") +
+  ggtitle("Percentage of Time Team Wins World Series") +
+  theme_bw()
+ggsave("worldserieschampion_odds.png")
+```
+
+
+Again, we see what we should expect: the Dodgers generally dominate, and if they don't, then San Diego is next most likely, as they were 2nd in baseball in Pythagorean win percentage.
+
+
+## Conclusion
+
+What I mainly want to discuss in this section is how this model could be improved. First of all, it is evident that Pythagorean win percentage is a simple and viable way of estimating teams' true talent levels, as we saw some fairly accurate results. However, there are some key drawbacks, including:
+
+- Lack of strength of schedule. For example, Colorado, San Francisco, and Arizona played very tough schedules this year because of the presence of LA and San Diego in their division. This issue was exacerbated for this season since West teams only played West teams, just as was the case for the Central and Eastern divisions.
+- Lack of starting pitcher strength. Win probabilities for single games are heavily dependent on the starting pitcher, and this model does not account for individual players in any way.
+- Lack of home-field advantage. Being the home team is advantageous in baseball. While this year without fans was different than normal, home teams still generally have an advantage simply from being more familiar with the ballpark.
+- Overconfidence for certain teams despite small sample sizes and new formats. The regular season was only 60 games, and this year's postseason format is subject to high variability. It is unrealistic to predict the Dodgers to win the World Series over the rest of the field, even with their extreme regular season dominance. For a concrete example, consider how the 2019 Nationals upset the favored Dodgers in 5 games in last year's division series on the backs of aces Max Scherzer, Patrick Corbin, and Stephen Strasburg.
+- Lack of consideration for strategy changes in the postseason. In the playoffs, aces might pitch on short rest, starters might come out of the bullpen, and managers may be quicker to use key bullpen arms.
+
+A more complete model would take these variables into account. 
