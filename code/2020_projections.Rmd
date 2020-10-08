@@ -27,7 +27,9 @@ Given we know how to find the relevant probabilities, the main tasks in the code
 4. Using the results of the regular season to determine playoff teams, and then simulating the [2020 postseason](https://en.wikipedia.org/wiki/2020_Major_League_Baseball_season#Postseason)
 5. Repeating the above steps many times in order to be able to compare our model's results to what has actually happened, and to project what will happen in the remainder of the postseason
 
-Most of the code below walks through the above steps in order to simulate a single season. Once we can do this, we write a function that simulates one whole season for us, and then we call this function 1,000 times to simulate 1,000 seasons. We then analyze our results graphically!
+Most of the code below walks through the above steps in order to simulate a single season, and I'm going to hide it except for a few outputs (standings and a few sample data frames) since it's pretty long. Once we simulate one season, we write a function that simulates one whole season for us, and then we call this function 1,000 times to simulate 1,000 seasons. We then analyze our results graphically!
+
+**Note that you can find the R Markdown file and season-simulating R script in their full forms in the code directory of this repository.**
 
 
 ```{r, message = FALSE}
@@ -36,7 +38,7 @@ library(baseballr)
 ```
 
 
-```{r}
+```{r, echo = FALSE, message = FALSE}
 # Step 1: Make the schedule
 # Function that takes in team names and the number of times they will play each other at their home parks. Outputs data frame where each row is a game
 make_schedule = function(teams, k) {
@@ -247,11 +249,12 @@ head(SCH)
 ```
 
 
-A portion of the 2020 regular season schedule with probabilities is above.
+A portion of the 2020 regular season schedule data frame that includes team talents and probabilities is above.
 
 
-```{r}
-#  Step 3: Play out a full season, where each game is a bernoulli trial with the parameter of the probability the home team wins
+```{r, echo = FALSE, warning = FALSE}
+#  Step 3: Play out a full season, where each game is a bernoulli trial with 
+#  the parameter of the probability the home team wins
 set.seed(9)
 SCH %>%
     mutate(outcome = rbinom(nrow(.), 1, prob_Home),
@@ -359,7 +362,7 @@ champion = ws_results %>%
   filter(Winner.WS == 1)
 
 # For reference
-head(ws_results)
+head(ws_results %>% select(Team, Seed, League, outcome, Winner.WS))
 ```
 
 
@@ -374,7 +377,9 @@ Many.Results = suppressMessages(map_df(rep("arg", n_seasons), one_simulation_20)
 head(Many.Results)
 ```
 
+
 The data frame `Many.Results` contains 30,000 rows = 30 teams * 1,000 seasons and includes the results for each team for each season.
+
 
 ## Analysis
 
@@ -389,7 +394,7 @@ playoff_props = Many.Results %>%
 ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
   geom_bar(stat = "identity") +
   xlab("Team") +
-  ggtitle("Percentage of Time Team Makes Playoffs") +
+  ggtitle("Playoff Odds") +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1))
 ggsave("playoff_odds.png")
@@ -411,7 +416,7 @@ playoff_props = Many.Results %>%
 ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
   geom_bar(stat = "identity") +
   xlab("Team") +
-  ggtitle("Percentage of Time Team Makes Division Series") +
+  ggtitle("Division Series Odds") +
   theme_bw()
 ggsave("divseries_odds.png")
 ```
@@ -430,7 +435,7 @@ playoff_props = Many.Results %>%
 ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
   geom_bar(stat = "identity") +
   xlab("Team") +
-  ggtitle("Percentage of Time Team Makes Championship Series") +
+  ggtitle("Championship Series Odds") +
   theme_bw()
 ggsave("championshipseries_odds.png")
 ```
@@ -449,7 +454,7 @@ playoff_props = Many.Results %>%
 ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
   geom_bar(stat = "identity") +
   xlab("Team") +
-  ggtitle("Percentage of Time Team Makes World Series") +
+  ggtitle("World Series Odds") +
   theme_bw()
 ggsave("worldseries_odds.png")
 ```
@@ -468,7 +473,7 @@ playoff_props = Many.Results %>%
 ggplot(playoff_props, aes(reorder(winner, -Percent), Percent)) +
   geom_bar(stat = "identity") +
   xlab("Team") +
-  ggtitle("Percentage of Time Team Wins World Series") +
+  ggtitle("Win World Series Odds") +
   theme_bw()
 ggsave("worldserieschampion_odds.png")
 ```
